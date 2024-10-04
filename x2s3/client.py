@@ -13,7 +13,7 @@ class ProxyClient:
         https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html
         """
 
-    async def get_object(self, key: str):
+    async def get_object(self, key: str, range_header: str = None):
         """
         Basic interface for AWS S3's GetObject API.
         https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html

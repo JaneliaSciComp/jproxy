@@ -9,6 +9,8 @@ from x2s3.app import create_app
 from x2s3.settings import Target, Settings
 from x2s3.utils import parse_xml
 
+obj_path = '/janelia-data-examples/jrc_mus_lung_covid.n5/render/v1_acquire_align___20210609_224836/s0/0/0/0'
+
 @pytest.fixture
 def get_settings():
     settings = Settings()
@@ -196,6 +198,61 @@ def test_virtual_host_get_object(app):
         assert 'n5' in json_obj
 
 
+def test_get_object_hidden(app):
+    with TestClient(app) as client:
+        response = client.get("/hidden-with-endpoint/jrc_mus_lung_covid.n5/attributes.json")
+        assert response.status_code == 200
+        json_obj = response.json()
+        assert 'n5' in json_obj
+
+
+def test_get_object_range_first(app):
+    with TestClient(app) as client:
+        # Test a valid range request (first 100 bytes)
+        response = client.get(
+            obj_path,
+            headers={"Range": "bytes=0-99"}
+        )
+        assert response.status_code == 206  # Partial Content
+        assert 'Content-Range' in response.headers
+        assert response.headers['Content-Range'] == 'bytes 0-99/987143'
+        assert len(response.content) == 100
+
+def test_get_object_range_mid(app):
+    with TestClient(app) as client:
+        # Test a valid range request (bytes 100-199)
+        response = client.get(
+            obj_path,
+            headers={"Range": "bytes=100-199"}
+        )
+        assert response.status_code == 206  # Partial Content
+        assert 'Content-Range' in response.headers
+        assert response.headers['Content-Range'] == 'bytes 100-199/987143'
+        assert len(response.content) == 100
+
+def test_get_object_range_last(app):
+    with TestClient(app) as client:
+        # Test a valid range request (last 100 bytes)
+        response = client.get(
+            obj_path,
+            headers={"Range": "bytes=-100"}
+        )
+        assert response.status_code == 206  # Partial Content
+        assert 'Content-Range' in response.headers
+        assert len(response.content) == 100
+
+def test_get_object_range_out_of_bounds(app):
+    with TestClient(app) as client:
+        # Test invalid range request (out of bounds)
+        response = client.get(
+            obj_path,
+            headers={"Range": "bytes=1000000-2000000"}
+        )
+        assert response.status_code == 416  # Range Not Satisfiable
+        root = parse_xml(response.text)
+        assert root.find('Code').text == 'InvalidRange'
+
+
 def test_prefixed_list_objects(app):
     with TestClient(app) as client:
         bucket_name = 'with-prefix'
@@ -207,14 +264,6 @@ def test_prefixed_list_objects(app):
         assert root.find('Delimiter').text == '/'
         assert len(root.findall('CommonPrefixes')) == 2
         assert root.find('IsTruncated').text == "false"
-
-
-def test_get_object_hidden(app):
-    with TestClient(app) as client:
-        response = client.get("/hidden-with-endpoint/jrc_mus_lung_covid.n5/attributes.json")
-        assert response.status_code == 200
-        json_obj = response.json()
-        assert 'n5' in json_obj
 
 
 def test_get_object_missing(app):

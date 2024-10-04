@@ -23,14 +23,15 @@ def handle_s3_exception(e, key=None):
     elif isinstance(e, botocore.exceptions.ReadTimeoutError):
         return JSONResponse({"error":"Upstream endpoint timed out"}, status_code=408)
     elif isinstance(e, botocore.exceptions.ClientError):
-        code = e.response['ResponseMetadata']['HTTPStatusCode']
-        if e.response["Error"]["Code"] == "NoSuchKey":
-            return get_nosuchkey_response(key)
-        elif int(code) == 404 and key:
+        status_code = e.response['ResponseMetadata']['HTTPStatusCode']
+        error = e.response['Error']
+        error_code = error['Code'] if 'Code' in error else 'Unknown'
+        if error_code == "NoSuchKey":
             return get_nosuchkey_response(key)
         else:
-            logger.opt(exception=sys.exc_info()).error("Error using boto S3 API")
-            return JSONResponse({"error":"Error communicating with AWS S3"}, status_code=code)
+            message = error['Message'] if 'Message' in error else 'Unknown'
+            resource = error['Resource'] if 'Resource' in error else 'Unknown'
+            return get_error_response(status_code, error_code, message, resource)
     else:
         logger.opt(exception=sys.exc_info()).error("Error communicating with AWS S3")
         return JSONResponse({"error":"Error communicating with AWS S3"}, status_code=500)
@@ -85,8 +86,9 @@ class AiobotoProxyClient(ProxyClient):
                 s3_res = await client.head_object(Bucket=self.bucket_name, Key=real_key)
                 headers = {
                     "ETag": s3_res.get("ETag"),
+                    "Accept-Ranges": "bytes",
                     "Content-Length": str(s3_res.get("ContentLength")),
-                    "Last-Modified": s3_res.get("LastModified").strftime("%a, %d %b %Y %H:%M:%S GMT")
+                    "Last-Modified": s3_res.get("LastModified").strftime("%a, %d %b %Y %H:%M:%S GMT"),
                 }
 
                 content_type = guess_content_type(real_key)
@@ -98,27 +100,32 @@ class AiobotoProxyClient(ProxyClient):
 
 
     @override
-    async def get_object(self, key: str):
+    async def get_object(self, key: str, range_header: str = None):
         real_key = key
         if self.bucket_prefix:
             real_key = os.path.join(self.bucket_prefix, key) if key else self.bucket_prefix
 
         filename = os.path.basename(real_key)
-        headers = {}
-
         content_type = guess_content_type(filename)
-        headers['Content-Type'] = content_type
+
+        headers = {
+            'Accept-Ranges': "bytes",
+            'Content-Type': content_type,
+        }
+
         if content_type=='application/octet-stream':
             headers['Content-Disposition'] = f'attachment; filename="{filename}"'
 
         try:
             return S3Stream(
                 self.get_client_creator,
+                headers=headers,
+                media_type=content_type,
                 bucket=self.bucket_name,
                 key=key,
                 real_key=real_key,
-                media_type=content_type,
-                headers=headers)
+                range_header=range_header,
+                )
         except Exception as e:
             return handle_s3_exception(e, key)
 
@@ -211,17 +218,52 @@ class S3Stream(StreamingResponse):
             bucket: str = None,
             key: str = None,
             real_key: str = None,
+            range_header: str = None
     ):
         super(S3Stream, self).__init__(content, status_code, headers, media_type, background)
         self.client_creator = client_creator
         self.bucket = bucket
         self.key = key
         self.real_key = real_key
+        self.range_header = range_header
 
     async def stream_response(self, send) -> None:
+
+        async def send_response(r):
+            await send({
+                "type": "http.response.start",
+                "status": r.status_code,
+                "headers": r.raw_headers,
+            })
+            await send({
+                "type": "http.response.body",
+                "body": r.body,
+                "more_body": False,
+            })
+
         async with self.client_creator() as client:
+            result = None
             try:
-                result = await client.get_object(Bucket=self.bucket, Key=self.real_key)
+                # Get the object with the range specified in headers
+                get_object_params = {
+                    "Bucket": self.bucket,
+                    "Key": self.real_key,
+                }
+                if self.range_header:
+                    get_object_params["Range"] = self.range_header
+
+                result = await client.get_object(**get_object_params)
+                res_headers = result["ResponseMetadata"]["HTTPHeaders"]
+
+                # Determine if this is a Range result
+                if "content-range" in res_headers:
+                    self.status_code = 206 # Partial Content
+                    self.raw_headers.append((b"content-range",
+                        res_headers["content-range"].encode('utf-8')))
+                    
+                if "content-length" in res_headers:
+                    self.raw_headers.append((b"content-length",
+                        res_headers["content-length"].encode('utf-8')))
 
                 await send({
                     "type": "http.response.start",
@@ -245,15 +287,6 @@ class S3Stream(StreamingResponse):
                     "body": b"",
                     "more_body": False})
 
-            except client.exceptions.NoSuchKey:
-                r = get_nosuchkey_response(self.key)
-                await send({
-                    "type": "http.response.start",
-                    "status": r.status_code,
-                    "headers": r.raw_headers,
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": r.body,
-                    "more_body": False,
-                })
+            except Exception as e:
+                r = handle_s3_exception(e, self.key)
+                await send_response(r)

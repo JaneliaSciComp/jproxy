@@ -70,7 +70,7 @@ class FileProxyClient(ProxyClient):
 
 
     @override
-    async def get_object(self, key: str):
+    async def get_object(self, key: str, range_header: str = None):
         try:
             path = os.path.join(self.root_path, key)
             if not os.path.isfile(path):

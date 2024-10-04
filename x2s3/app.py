@@ -24,6 +24,7 @@ def create_app(settings):
         allow_credentials=True,
         allow_methods=["GET","HEAD"],
         allow_headers=["*"],
+        expose_headers=["Range", "Content-Range"],
     )
     app.mount("/static", StaticFiles(directory="static"), name="static")
     templates = Jinja2Templates(directory="templates")
@@ -248,7 +249,8 @@ def create_app(settings):
                 else:
                     raise HTTPException(status_code=400, detail="Invalid list type")
             else:
-                return await client.get_object(target_path)
+                range_header = request.headers.get("range")
+                return await client.get_object(target_path, range_header)
 
         if not target_path or target_path.endswith("/"):
             if app.settings.ui:
@@ -259,7 +261,8 @@ def create_app(settings):
             else:
                 return get_nosuchbucket_response(target_name)
         else:
-            return await client.get_object(target_path)
+            range_header = request.headers.get("range")
+            return await client.get_object(target_path, range_header)
 
 
 

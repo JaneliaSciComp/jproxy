@@ -44,7 +44,7 @@ class Settings(BaseSettings):
 
     def get_target_map(self):
         return {t.name.lower(): t for t in self.targets}
-    
+
 
     def get_browseable_targets(self):
         return [target.name for target in self.targets if target.browseable]
@@ -58,7 +58,7 @@ class Settings(BaseSettings):
                 return target_map[key]
         return None
 
-        
+  
     @classmethod
     def settings_customise_sources(  # noqa: PLR0913
         cls,
